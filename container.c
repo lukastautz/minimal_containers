@@ -522,7 +522,7 @@ void mount_dirs(void) {
         mknod("dev/cuse", S_IFCHR | 0600, makedev(10, 203)) == -1 ||
         mknod("dev/hpet", S_IFCHR | 0600, makedev(10, 228)) == -1 ||
         mknod("dev/fuse", S_IFCHR | 0666, makedev(10, 229)) == -1 ||
-        (!(config.namespaces & CLONE_NEWUSER) ? mknod("dev/kvm", S_IFCHR | 0660, makedev(10, 232)) == -1 : false) ||
+        (!(config.namespaces & CLONE_NEWUSER) && mknod("dev/kvm", S_IFCHR | 0660, makedev(10, 232)) == -1) ||
         mknod("dev/ppp", S_IFCHR | 0600, makedev(108, 0)) == -1 ||
         mknod("dev/rtc0", S_IFCHR | 0444, makedev(251, 0)) == -1 ||
         symlink("/proc/self/fd", "dev/fd") == -1 ||
@@ -669,12 +669,14 @@ void command_start(int argc, char **argv) {
             if (init[0] == '@') {
                 const char *_argv[] = {init + 1, NULL};
                 execveat(initfd, "", _argv, NULL, AT_EMPTY_PATH);
-                close(initfd); // CLOEXEC doesn't work with scripts with shebang as when the interpreter wants to read the file, it's already closed
+                close(initfd); // CLOEXEC doesn't work with scripts with shebang as when the interpreter wants to read the file, it'd be already closed
             } else
                 execl(init, init, NULL);
             exit(1);
-        } else
+        } else {
+            close(initfd);
             waitpid(pid, &s, 0);
+        }
     } else {
         sleep(2); // sleep until SIGUSR1
         memcpy(buf, SLEN("/proc/"));
