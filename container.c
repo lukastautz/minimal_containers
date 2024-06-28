@@ -666,6 +666,7 @@ void command_start(int argc, char **argv) {
                 error("mount(/proc) failed!");
             if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1)
                 error("prctl failed!");
+            environ = NULL;
             if (init[0] == '@') {
                 const char *_argv[] = {init + 1, NULL};
                 execveat(initfd, "", _argv, NULL, AT_EMPTY_PATH);
