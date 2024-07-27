@@ -467,9 +467,9 @@ void start_cgroups(char *name, uint8 len) {
 }
 
 void rrm(char *dir_name, uint16 dir_len) {
-    char buf[2048];
-    memcpy(buf, dir_name, dir_len);
-    buf[dir_len] = '/';
+    char path_buf[2048];
+    memcpy(path_buf, dir_name, dir_len);
+    path_buf[dir_len] = '/';
     struct stat element;
     DIR *dir;
     struct dirent *dir_entry;
@@ -479,16 +479,16 @@ void rrm(char *dir_name, uint16 dir_len) {
     while (dir_entry = readdir(dir))
         if (memcmp(dir_entry->d_name, SBLEN(".")) && memcmp(dir_entry->d_name, SBLEN(".."))) {
             d_name_len = strlen(dir_entry->d_name);
-            if (dir_len + d_name_len >= sizeof(buf))
+            if (dir_len + d_name_len >= sizeof(path_buf))
                 error("name too long");
-            memcpy(buf + dir_len + 1, dir_entry->d_name, d_name_len + 1);
-            lstat(buf, &element);
+            memcpy(path_buf + dir_len + 1, dir_entry->d_name, d_name_len + 1);
+            lstat(path_buf, &element);
             if (S_ISDIR(element.st_mode)) {
-                rrm(buf, dir_len + 1 + d_name_len);
-                if (rmdir(buf) == -1)
+                rrm(path_buf, dir_len + 1 + d_name_len);
+                if (rmdir(path_buf) == -1)
                     error("rmdir failed");
             } else
-                if (unlink(buf) == -1)
+                if (unlink(path_buf) == -1)
                     error("unlink failed");
         }
     closedir(dir);
