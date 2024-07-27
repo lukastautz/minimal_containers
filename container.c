@@ -674,6 +674,7 @@ void command_start(int argc, char **argv) {
                 close(initfd); // CLOEXEC doesn't work with scripts with shebang as when the interpreter wants to read the file, it'd be already closed
             } else
                 execl(init, init, NULL);
+            error("execl/execveat returned.");
             exit(1);
         } else {
             close(initfd);
