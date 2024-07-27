@@ -84,17 +84,17 @@ LINKED_LIST(io_limit, \
            )
 
 struct {
-    char max_physical_memory[16];
-    char max_memory[16];
-    char cpu_share[8];
-    char net_classid[16];
-    char init[128];
-    char root[128];
-    uint8 max_physical_memory_len : 5;
-    uint8 max_memory_len : 5;
-    uint8 cpu_share_len : 4;
-    uint8 net_classid_len : 5;
-    uint8 root_len : 7;
+    char max_physical_memory[16]; // not zero-terminated
+    char max_memory[16];          // not zero-terminated
+    char cpu_share[8];            // not zero-terminated
+    char net_classid[16];         // not zero-terminated
+    char init[128];               // zero-terminated
+    char root[128];               // zero-terminated
+    uint8 max_physical_memory_len;
+    uint8 max_memory_len;
+    uint8 cpu_share_len;
+    uint8 net_classid_len;
+    uint8 root_len;
     bind_mount *mounts;
     io_limit *iops_limits;
     io_limit *io_bw_limits;
@@ -121,7 +121,8 @@ void add_custom_mount(char *data, uint8 len, bool read_only) {
     char *sep = strchr(data, ':');
     if (!sep)
         error("invalid mount!");
-    uint8 source_len = sep - data, target_len = len - source_len - 1;
+    uint8 source_len = sep - data, target_len = len - source_len - 2;
+    /* target is without preceding '/' because mount will be relative from root directory */
     if ((source_len + 1) > sizeof(((bind_mount *)0)->source) || (target_len + 1) > sizeof(((bind_mount *)0)->target))
         error("too big!");
     bind_mount *ptr = malloc(sizeof(bind_mount)), *pos = config.mounts;
@@ -138,8 +139,8 @@ void add_custom_mount(char *data, uint8 len, bool read_only) {
         ptr->last = NULL;
     }
     memcpy(ptr->source, data, source_len);
-    memcpy(ptr->target, sep + 2, target_len - 1);
-    ptr->source[source_len] = ptr->target[target_len - 1] = '\0';
+    memcpy(ptr->target, sep + 2, target_len);
+    ptr->source[source_len] = ptr->target[target_len] = '\0';
     ptr->read_only = read_only;
 }
 
@@ -170,7 +171,7 @@ void add_io_limit(char *data, uint8 len, io_limit **dest) {
 #define CONFIG_COPY_SET_LEN(key) \
     { \
         if (sizeof(config.key) >= val_len) { \
-            memcpy(config.key, ptr_start_value, val_len); \
+            memcpy(config.key, ptr_after_equals_sign, val_len); \
             config.key##_len = val_len; \
         } else \
             error("Value too long!"); \
@@ -181,26 +182,25 @@ void add_io_limit(char *data, uint8 len, io_limit **dest) {
 void parse_config(int fd) {
     memset(&config, 0, sizeof(config));
     uint16 len, pos = 0, val_len;
-    char *ptr = buf, *ptr_start_value;
-    while ((len = read(fd, ptr, 1024)) > 0)
-        ptr += len;
+    char *ptr_start_of_line = buf, *ptr_after_equals_sign, *tmp = buf;
+    while ((len = read(fd, tmp, 1024)) > 0)
+        tmp += len;
     close(fd);
-    if ((len = ptr - buf) < sizeof("init=\nroot="))
+    if ((len = tmp - buf) < sizeof("init=\nroot="))
         error("config is too short!");
-    ptr = buf;
     enum {
         none = 0,
+        init,
+        root,
+        namespaces,
         max_physical_memory,
         max_memory,
         cpu_share,
         net_classid,
-        init,
-        root,
         mount,
         mount_ro,
         iops_limit,
-        io_bw_limit,
-        namespaces
+        io_bw_limit
     } key = none;
     for (uint16 i = 0; i <= len; ++i) {
         if (i == len) {
@@ -211,70 +211,38 @@ void parse_config(int fd) {
         }
         switch (buf[i]) {
             case '\n':
-                ptr = &buf[i] + 1;
+                ptr_start_of_line = buf + i + 1; // next line
                 if (key) {
-                    val_len = ptr - ptr_start_value - 1;
+                    val_len = buf + i - ptr_after_equals_sign;
                     switch (key) {
-                        case max_physical_memory:
-                            DOUBLE_KEY_CHECK(max_physical_memory);
-                            CONFIG_COPY_SET_LEN(max_physical_memory);
-                            break;
-                        case max_memory:
-                            DOUBLE_KEY_CHECK(max_memory);
-                            CONFIG_COPY_SET_LEN(max_memory);
-                            break;
-                        case cpu_share:
-                            DOUBLE_KEY_CHECK(cpu_share);
-                            CONFIG_COPY_SET_LEN(cpu_share);
-                            break;
-                        case net_classid:
-                            DOUBLE_KEY_CHECK(net_classid);
-                            CONFIG_COPY_SET_LEN(net_classid);
-                            break;
                         case init:
                             DOUBLE_KEY_CHECK(init);
-                            if (sizeof(config.init) >= val_len) {
-                                memcpy(config.init, ptr_start_value, val_len);
+                            if (sizeof(config.init) > val_len) {
+                                memcpy(config.init, ptr_after_equals_sign, val_len);
                                 config.init[val_len] = '\0';
                             } else
                                 error("Value too long!");
                             break;
                         case root:
                             DOUBLE_KEY_CHECK(root);
-                            if (sizeof(config.root) >= val_len) {
-                                memcpy(config.root, ptr_start_value, val_len);
+                            if (sizeof(config.root) > val_len) {
+                                memcpy(config.root, ptr_after_equals_sign, val_len);
                                 config.root_len = val_len;
                                 config.root[val_len] = '\0';
                             } else
                                 error("Value too long!");
                             break;
-                        case mount:
-                        case mount_ro:
-                            if (val_len > 255)
-                                error("too long");
-                            add_custom_mount(ptr_start_value, val_len, key == mount_ro);
-                            break;
-                        case iops_limit:
-                            if (val_len > sizeof(((io_limit *)0)->data))
-                                error("too long");
-                            add_io_limit(ptr_start_value, val_len, &config.iops_limits);
-                            break;
-                        case io_bw_limit:
-                            if (val_len > sizeof(((io_limit *)0)->data))
-                                error("too long");
-                            add_io_limit(ptr_start_value, val_len, &config.io_bw_limits);
-                            break;
                         case namespaces:
                             if (config.namespaces)
                                 error("Double key namespaces!");
-                            if (val_len > 6)
+                            if (val_len > strlen("uphti"))
                                 error("too long");
-                            if (val_len == strlen("all") && !memcmp(ptr_start_value, SLEN("all"))) {
+                            if (val_len == strlen("all") && !memcmp(ptr_after_equals_sign, SLEN("all"))) {
                                 config.namespaces = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWTIME | CLONE_NEWIPC;
                                 break;
                             }
                             for (uint8 i = 0; i < val_len; ++i) {
-                                switch (ptr_start_value[i]) {
+                                switch (ptr_after_equals_sign[i]) {
                                     case 'u':
                                         config.namespaces |= CLONE_NEWUSER;
                                         break;
@@ -294,6 +262,39 @@ void parse_config(int fd) {
                                         error("unknown namespace");
                                 }
                             }
+                            break;
+                        case max_physical_memory:
+                            DOUBLE_KEY_CHECK(max_physical_memory);
+                            CONFIG_COPY_SET_LEN(max_physical_memory);
+                            break;
+                        case max_memory:
+                            DOUBLE_KEY_CHECK(max_memory);
+                            CONFIG_COPY_SET_LEN(max_memory);
+                            break;
+                        case cpu_share:
+                            DOUBLE_KEY_CHECK(cpu_share);
+                            CONFIG_COPY_SET_LEN(cpu_share);
+                            break;
+                        case net_classid:
+                            DOUBLE_KEY_CHECK(net_classid);
+                            CONFIG_COPY_SET_LEN(net_classid);
+                            break;
+                        case mount:
+                        case mount_ro:
+                            if (val_len > 255)
+                                error("too long");
+                            add_custom_mount(ptr_after_equals_sign, val_len, key == mount_ro);
+                            break;
+                        case iops_limit:
+                            if (val_len > sizeof(((io_limit *)0)->data))
+                                error("too long");
+                            add_io_limit(ptr_after_equals_sign, val_len, &config.iops_limits);
+                            break;
+                        case io_bw_limit:
+                            if (val_len > sizeof(((io_limit *)0)->data))
+                                error("too long");
+                            add_io_limit(ptr_after_equals_sign, val_len, &config.io_bw_limits);
+                            break;
                     }
                 } else if (buf[i - 1] != '\n' && i != 0)
                     error("malformed config (unexpected newline)!");
@@ -301,38 +302,38 @@ void parse_config(int fd) {
                 break;
             case '=':
                 buf[i] = '\0';
-                if (EQUALS_CONST(ptr, "max_physical_memory"))
-                    key = max_physical_memory;
-                else if (EQUALS_CONST(ptr, "max_memory"))
-                    key = max_memory;
-                else if (EQUALS_CONST(ptr, "cpu_share"))
-                    key = cpu_share;
-                else if (EQUALS_CONST(ptr, "net_classid"))
-                    key = net_classid;
-                else if (EQUALS_CONST(ptr, "init"))
+                if (EQUALS_CONST(ptr_start_of_line, "init"))
                     key = init;
-                else if (EQUALS_CONST(ptr, "root"))
+                else if (EQUALS_CONST(ptr_start_of_line, "root"))
                     key = root;
-                else if (EQUALS_CONST(ptr, "mount"))
-                    key = mount;
-                else if (EQUALS_CONST(ptr, "mount_ro"))
-                    key = mount_ro;
-                else if (EQUALS_CONST(ptr, "iops_limit"))
-                    key = iops_limit;
-                else if (EQUALS_CONST(ptr, "io_bw_limit"))
-                    key = io_bw_limit;
-                else if (EQUALS_CONST(ptr, "namespaces"))
+                else if (EQUALS_CONST(ptr_start_of_line, "namespaces"))
                     key = namespaces;
+                else if (EQUALS_CONST(ptr_start_of_line, "max_physical_memory"))
+                    key = max_physical_memory;
+                else if (EQUALS_CONST(ptr_start_of_line, "max_memory"))
+                    key = max_memory;
+                else if (EQUALS_CONST(ptr_start_of_line, "cpu_share"))
+                    key = cpu_share;
+                else if (EQUALS_CONST(ptr_start_of_line, "net_classid"))
+                    key = net_classid;
+                else if (EQUALS_CONST(ptr_start_of_line, "mount"))
+                    key = mount;
+                else if (EQUALS_CONST(ptr_start_of_line, "mount_ro"))
+                    key = mount_ro;
+                else if (EQUALS_CONST(ptr_start_of_line, "iops_limit"))
+                    key = iops_limit;
+                else if (EQUALS_CONST(ptr_start_of_line, "io_bw_limit"))
+                    key = io_bw_limit;
                 else
                     error("malformed config (unknown key)!");
-                ptr_start_value = &buf[i] + 1;
+                ptr_after_equals_sign = buf + i + 1;
                 break;
             case '#':
                 if (key)
                     error("Unexpected '#'!") //;
                 else {
                     while (buf[i++] != '\n');
-                    ptr = &buf[i];
+                    ptr_start_of_line = buf + i;
                 }
         }
     }
@@ -478,7 +479,7 @@ void rrm(char *dir_name, uint16 dir_len) {
     while (dir_entry = readdir(dir))
         if (memcmp(dir_entry->d_name, SBLEN(".")) && memcmp(dir_entry->d_name, SBLEN(".."))) {
             d_name_len = strlen(dir_entry->d_name);
-            if (dir_len + 1 + d_name_len > 2000)
+            if (dir_len + d_name_len >= sizeof(buf))
                 error("name too long");
             memcpy(buf + dir_len + 1, dir_entry->d_name, d_name_len + 1);
             lstat(buf, &element);
@@ -626,7 +627,7 @@ void command_start(int argc, char **argv) {
     memcpy(buf, SLEN(PATH "/configs/"));
     memcpy(buf + strlen(PATH "/configs/"), argv[1], len + 1);
     int fd = _open(buf, O_RDONLY), s;
-    if (lseek(fd, 0L, SEEK_END) > sizeof(buf))
+    if (lseek(fd, 0L, SEEK_END) >= sizeof(buf))
         error("Config file too big!");
     lseek(fd, 0L, SEEK_SET);
     memcpy(buf + strlen(PATH "/"), SLEN("logs/"));
