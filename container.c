@@ -777,10 +777,10 @@ void command_list(int argc, char **argv) {
     bool is_running;
     struct dirent *dir_entry;
     uint8 len, read_len;
-    char whitespaces[32], buf[256];
+    char whitespaces[32], *pid = buf + 512;
     int fd;
     memcpy(buf, SLEN(PATH "/pids/"));
-    memset(whitespaces, ' ', 32);
+    memset(whitespaces, ' ', sizeof(whitespaces));
     DIR *dir;
     if (!(dir = opendir(PATH "/configs")))
         exit(1);
@@ -789,13 +789,15 @@ void command_list(int argc, char **argv) {
         if (memcmp(dir_entry->d_name, SBLEN(".")) && memcmp(dir_entry->d_name, SBLEN(".."))) {
             len = strlen(dir_entry->d_name);
             memcpy(buf + strlen(PATH "/pids/"), dir_entry->d_name, len + 1);
-            is_running = (fd = open(buf, O_RDONLY)) != -1 && (read_len = read(fd, buf, 64)) != -1 && close(fd) != -1;
+            is_running = (fd = open(buf, O_RDONLY)) != -1 && (read_len = read(fd, pid, 64)) != -1 && close(fd) != -1;
             if (is_running) {
-                buf[read_len] = '\0';
-                if (kill(atoi(buf), 0) == -1) // check whether process exists
+                pid[read_len] = '\0';
+                if (kill(atoi(pid), 0) == -1) // check whether process exists
                     is_running = false;
             }
             if ((argc == 2 && is_running) || argc != 2) {
+                if (len >= sizeof(whitespaces))
+                    len = sizeof(whitespaces) - 1;
                 write(STDOUT, dir_entry->d_name, len);
                 write(STDOUT, whitespaces, sizeof(whitespaces) - len);
                 if (is_running)
