@@ -187,8 +187,7 @@ void parse_config(int fd) {
     while ((len = read(fd, tmp, 1024)) > 0)
         tmp += len;
     close(fd);
-    if ((len = tmp - buf) < sizeof("init=\nroot="))
-        error("config is too short!");
+    len = tmp - buf;
     enum {
         none = 0,
         init,
@@ -627,8 +626,11 @@ void command_start(int argc, char **argv) {
     memcpy(buf, SLEN(PATH "/configs/"));
     memcpy(buf + strlen(PATH "/configs/"), argv[1], len + 1);
     int fd = _open(buf, O_RDONLY), s;
-    if (lseek(fd, 0L, SEEK_END) >= sizeof(buf))
-        error("Config file too big!");
+    uint64 l = lseek(fd, 0L, SEEK_END);
+    if (l >= sizeof(buf))
+        error("config is too long!") //;
+    else if (l <= sizeof("init=\nroot=\nnamespaces="))
+        error("config is too short!") //;
     lseek(fd, 0L, SEEK_SET);
     memcpy(buf + strlen(PATH "/"), SLEN("logs/"));
     memcpy(buf + strlen(PATH "/logs/"), argv[1], len + 1);
