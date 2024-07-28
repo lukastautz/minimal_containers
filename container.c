@@ -10,6 +10,7 @@
 #define AT_EMPTY_PATH  0x1000
 int execveat(int, char *, const char **, const char **, int);
 int unshare(int);
+extern char **environ;
 #endif
 #endif
 
@@ -181,7 +182,7 @@ void add_io_limit(char *data, uint8 len, io_limit **dest) {
 
 void parse_config(int fd) {
     memset(&config, 0, sizeof(config));
-    uint16 len, pos = 0, val_len;
+    uint16 len, val_len;
     char *ptr_start_of_line = buf, *ptr_after_equals_sign, *tmp = buf;
     while ((len = read(fd, tmp, 1024)) > 0)
         tmp += len;
@@ -294,11 +295,10 @@ void parse_config(int fd) {
                             if (val_len > sizeof(((io_limit *)0)->data))
                                 error("too long");
                             add_io_limit(ptr_after_equals_sign, val_len, &config.io_bw_limits);
-                            break;
                     }
-                } else if (buf[i - 1] != '\n' && i != 0)
+                    key = none;
+                } else if (i != 0 && buf[i - 1] != '\n')
                     error("malformed config (unexpected newline)!");
-                key = none;
                 break;
             case '=':
                 buf[i] = '\0';
@@ -723,11 +723,10 @@ void command_kill(int argc, char **argv) {
         write_const_stderr("Usage: container kill {CONTAINER}\nKill a container.\n");
         exit(1);
     }
-    char buf[64];
     uint8 len;
     chdir(PATH "/pids");
     int fd = _open(argv[1], O_RDONLY);
-    if ((len = read(fd, buf, 63)) < 1) {
+    if ((len = read(fd, buf, 64)) < 1) {
         write_const_stderr("Error: read() failed!\n");
         exit(2);
     }
@@ -749,7 +748,7 @@ void command_start_all(int argc, char **argv) {
     }
     struct sigaction action;
     memset(&action, 0, sizeof(struct sigaction));
-    action.sa_sigaction = kill_zombie;  
+    action.sa_sigaction = kill_zombie;
     sigemptyset(&action.sa_mask);
     action.sa_flags = SA_RESTART | SA_SIGINFO;
     sigaction(SIGCHLD, &action, NULL);
