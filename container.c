@@ -105,12 +105,14 @@ LINKED_LIST(io_limit, \
 struct {
     char max_physical_memory[16]; // not zero-terminated
     char max_memory[16];          // not zero-terminated
+    char max_processes[16];
     char cpu_share[8];            // not zero-terminated
     char net_classid[16];         // not zero-terminated
     char init[128];               // zero-terminated
     char root[128];               // zero-terminated
     uint8 max_physical_memory_len;
     uint8 max_memory_len;
+    uint8 max_processes_len;
     uint8 cpu_share_len;
     uint8 net_classid_len;
     uint8 root_len;
@@ -213,6 +215,7 @@ void parse_config(int fd) {
         namespaces,
         max_physical_memory,
         max_memory,
+        max_processes,
         cpu_share,
         net_classid,
         mount,
@@ -253,10 +256,14 @@ void parse_config(int fd) {
                         case namespaces:
                             if (config.namespaces)
                                 error("Double key namespaces!");
-                            if (val_len > strlen("uphti"))
+                            if (val_len > strlen("uphtic"))
                                 error("too long");
                             if (val_len == strlen("all") && !memcmp(ptr_after_equals_sign, SLEN("all"))) {
-                                config.namespaces = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWTIME | CLONE_NEWIPC;
+                                config.namespaces = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWTIME | CLONE_NEWIPC | CLONE_NEWCGROUP;
+                                break;
+                            }
+                            if (val_len == strlen("none") && !memcmp(ptr_after_equals_sign, SLEN("none"))) {
+                                config.namespaces = 0xFFFFFFFF;
                                 break;
                             }
                             for (uint8 i = 0; i < val_len; ++i) {
@@ -276,6 +283,9 @@ void parse_config(int fd) {
                                     case 'i':
                                         config.namespaces |= CLONE_NEWIPC;
                                         break;
+                                    case 'c':
+                                        config.namespaces |= CLONE_NEWCGROUP;
+                                        break;
                                     default:
                                         error("unknown namespace");
                                 }
@@ -288,6 +298,10 @@ void parse_config(int fd) {
                         case max_memory:
                             DOUBLE_KEY_CHECK(max_memory);
                             CONFIG_COPY_SET_LEN(max_memory);
+                            break;
+                        case max_processes:
+                            DOUBLE_KEY_CHECK(max_processes);
+                            CONFIG_COPY_SET_LEN(max_processes);
                             break;
                         case cpu_share:
                             DOUBLE_KEY_CHECK(cpu_share);
@@ -329,6 +343,8 @@ void parse_config(int fd) {
                     key = max_physical_memory;
                 else if (EQUALS_CONST(ptr_start_of_line, "max_memory"))
                     key = max_memory;
+                else if (EQUALS_CONST(ptr_start_of_line, "max_processes"))
+                    key = max_processes;
                 else if (EQUALS_CONST(ptr_start_of_line, "cpu_share"))
                     key = cpu_share;
                 else if (EQUALS_CONST(ptr_start_of_line, "net_classid"))
@@ -349,13 +365,15 @@ void parse_config(int fd) {
                 if (key)
                     error("Unexpected '#'!") //;
                 else {
-                    while (buf[i++] != '\n');
-                    ptr_start_of_line = buf + i;
+                    while (buf[++i] != '\n');
+                    ptr_start_of_line = buf + i + 1;
                 }
         }
     }
     if (!(config.root_len && *config.init && config.namespaces))
         error("Missing key(s)!");
+    if (config.namespaces == 0xFFFFFFFF)
+        config.namespaces = 0;
 }
 
 void prepare_cgroups(char *name, uint8 len) {
@@ -380,6 +398,14 @@ void prepare_cgroups(char *name, uint8 len) {
             write(fd = _open(buf, O_WRONLY), config.max_memory, config.max_memory_len);
             close(fd);
         }
+    }
+    if (config.max_processes_len) {
+        memcpy(buf + strlen("/sys/fs/cgroup/"), SLEN("pids/"));
+        memcpy(buf + strlen("/sys/fs/cgroup/pids/"), name, len + 1);
+        mkdir(buf, 0755);
+        memcpy(buf + strlen("/sys/fs/cgroup/pids/") + len, SBLEN("/pids.max"));
+        write(fd = _open(buf, O_WRONLY), config.max_processes, config.max_processes_len);
+        close(fd);
     }
     if (config.cpu_share_len) {
         memcpy(buf + strlen("/sys/fs/cgroup/"), SLEN("cpu/"));
@@ -453,6 +479,20 @@ void start_cgroups(char *name, uint8 len) {
     int fd = _open(buf, O_WRONLY);
     write(fd, pidbuf, l = itoa(getpid(), pidbuf));
     close(fd);
+    if (config.max_memory_len || config.max_physical_memory_len) {
+        memcpy(buf + strlen("/sys/fs/cgroup/"), SLEN("memory/"));
+        memcpy(buf + strlen("/sys/fs/cgroup/memory/"), name, len);
+        memcpy(buf + strlen("/sys/fs/cgroup/memory/") + len, SBLEN("/cgroup.procs"));
+        write(fd = _open(buf, O_WRONLY), pidbuf, l);
+        close(fd);
+    }
+    if (config.max_processes_len) {
+        memcpy(buf + strlen("/sys/fs/cgroup/"), SLEN("pids/"));
+        memcpy(buf + strlen("/sys/fs/cgroup/pids/"), name, len);
+        memcpy(buf + strlen("/sys/fs/cgroup/pids/") + len, SBLEN("/cgroup.procs"));
+        write(fd = _open(buf, O_WRONLY), pidbuf, l);
+        close(fd);
+    }
     if (config.cpu_share_len) {
         memcpy(buf + strlen("/sys/fs/cgroup/"), SLEN("cpu/"));
         memcpy(buf + strlen("/sys/fs/cgroup/cpu/"), name, len);
@@ -464,13 +504,6 @@ void start_cgroups(char *name, uint8 len) {
         memcpy(buf + strlen("/sys/fs/cgroup/"), SLEN("net_cls/"));
         memcpy(buf + strlen("/sys/fs/cgroup/net_cls/"), name, len);
         memcpy(buf + strlen("/sys/fs/cgroup/net_cls/") + len, SBLEN("/cgroup.procs"));
-        write(fd = _open(buf, O_WRONLY), pidbuf, l);
-        close(fd);
-    }
-    if (config.max_memory_len || config.max_physical_memory_len) {
-        memcpy(buf + strlen("/sys/fs/cgroup/"), SLEN("memory/"));
-        memcpy(buf + strlen("/sys/fs/cgroup/memory/"), name, len);
-        memcpy(buf + strlen("/sys/fs/cgroup/memory/") + len, SBLEN("/cgroup.procs"));
         write(fd = _open(buf, O_WRONLY), pidbuf, l);
         close(fd);
     }
@@ -517,12 +550,16 @@ void mount_dirs(void) {
     struct stat element;
     if (!lstat("dev", &element)) {
         umount("dev/pts");
+        if (!(config.namespaces & CLONE_NEWUSER))
+            umount("dev/shm");
         rrm(SLEN("dev"));
         rmdir("dev");
     }
-    if (!lstat("tmp", &element))
+    if (!lstat("tmp", &element)) {
+        if (!(config.namespaces & CLONE_NEWUSER))
+            umount("tmp");
         rrm(SLEN("tmp"));
-    else
+    } else
         mkdir("tmp", 0777);
     if (
         mkdir("dev", 0655) == -1 ||
@@ -551,6 +588,8 @@ void mount_dirs(void) {
         mount("none", "dev/pts", "devpts", MS_NOEXEC | MS_NOSUID, NULL) == -1
     )
         error("Failed to prepare /dev!");
+    if (!(config.namespaces & CLONE_NEWUSER))
+        umount("proc");
     if (!(config.namespaces & CLONE_NEWPID) && mount("proc", "proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1)
         error("mount(/proc) failed!");
     bind_mount *mnt = config.mounts;
