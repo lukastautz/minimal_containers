@@ -661,14 +661,14 @@ void kill_if_running(char *name, uint8 len) {
 void do_nothing(int) { }
 
 void help_start(void) {
-    write_const_stderr("Usage: container start [-d|-s] {CONTAINER}\nOptions:\n\t-d\tDon't detach from terminal.\n\t-s\tStart (interactively) the shell (either environment SHELL, or /bin/bash)\n");
+    write_const_stderr("Usage: container start [-d|-s|-se] {CONTAINER}\nOptions:\n\t-d\tDon't detach from terminal.\n\t-s\tStart (interactively) the shell (either environment SHELL, or /bin/bash)\n\t-se\tSame as '-s', but keep the environment variables.\n");
     exit(0);
 }
 
 void command_start(int argc, char **argv) {
     if (!(argc == 2 || argc == 3) || (argc == 2 && argv[1][0] == '-'))
         help_start();
-    bool daemon = false, shell = false;
+    bool daemon = false, shell = false, clearenv = true;
     if (argc == 3) {
         if (EQUALS_CONST(argv[1], "-d")) {
             ++argv;
@@ -676,6 +676,10 @@ void command_start(int argc, char **argv) {
         } else if (EQUALS_CONST(argv[1], "-s")) {
             ++argv;
             shell = true;
+        } else if (EQUALS_CONST(argv[1], "-se")) {
+            ++argv;
+            shell = true;
+            clearenv = false;
         } else {
             write_const_stderr("Unknown option. Try \"container --help\" for more information.\n");
             exit(1);
@@ -733,11 +737,13 @@ void command_start(int argc, char **argv) {
                 error("sethostname failed!");
             if (config.namespaces & CLONE_NEWPID && mount("proc", "proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1)
                 error("mount(/proc) failed!");
-            umount2("tmp/old_root", MNT_DETACH);
+            if (umount2("tmp/old_root", MNT_DETACH) == -1)
+                error("umounting old root failed");
             rmdir("tmp/old_root");
             if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1)
                 error("prctl failed!");
-            environ = NULL;
+            if (clearenv)
+                environ = NULL;
             if (init[0] == '@') {
                 const char *_argv[] = {init + 1, NULL};
                 execveat(initfd, "", _argv, NULL, AT_EMPTY_PATH);
@@ -745,7 +751,6 @@ void command_start(int argc, char **argv) {
             } else
                 execl(init, init, NULL);
             error("execl/execveat returned.");
-            exit(1);
         } else {
             close(initfd);
             waitpid(pid, &s, 0);
