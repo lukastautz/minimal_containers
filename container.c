@@ -19,15 +19,18 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #ifdef __dietlibc__
 #define _GNU_SOURCE /* for u_intN_t + sched.h */
 #include <sched.h>
+int pivot_root(const char *new_root, const char *put_old);
 #else
 #include <linux/sched.h>
 #include <features.h>
 #ifdef __GLIBC__
 #include <sys/sysmacros.h>
+#include <sys/syscall.h>
 #define O_PATH         01000000
 #define AT_EMPTY_PATH  0x1000
 int execveat(int, char *, const char **, const char **, int);
 int unshare(int);
+#define pivot_root(a, b) syscall(SYS_pivot_root, a, b)
 extern char **environ;
 #endif
 #endif
@@ -707,23 +710,31 @@ void command_start(int argc, char **argv) {
             error("unshare failed!");
         kill(getppid(), SIGUSR1);
         sleep(2); // sleep until SIGUSR1
+        mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);
+        if (mount(config.root, config.root, "", MS_BIND | MS_REC, NULL) == -1)
+            error("bind-mounting root as root failed!");
         char *init = config.init;
         int initfd;
         if (shell)
             init = get_shell();
         if (init[0] == '@')
             initfd = _open(init + 1, O_PATH);
-        if (chdir(config.root) == -1 || chroot(config.root) == -1 || chdir("/") == -1)
-            error("chroot failed!");
+        if (chdir(config.root) == -1)
+            error("chdir to root failed!");
         mount("none", "tmp", "tmpfs", MS_NODEV | MS_NOSUID | MS_NOEXEC, NULL);
         mount("none", "dev/shm", "tmpfs", MS_NODEV | MS_NOSUID | MS_NOEXEC, NULL);
         chmod("tmp", 0777);
         chmod("dev/shm", 0777);
+        mkdir("tmp/old_root", 0777);
+        if (pivot_root(".", "tmp/old_root") == -1)
+            error("pivot_root failed!");
         if (!(pid = fork())) {
             if (config.namespaces & CLONE_NEWUTS && sethostname(argv[1], len))
                 error("sethostname failed!");
             if (config.namespaces & CLONE_NEWPID && mount("proc", "proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1)
                 error("mount(/proc) failed!");
+            umount2("tmp/old_root", MNT_DETACH);
+            rmdir("tmp/old_root");
             if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1)
                 error("prctl failed!");
             environ = NULL;

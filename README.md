@@ -44,4 +44,4 @@ The neccesary cgroup (v1) systems have to be mounted at `/sys/fs/cgroup{devices,
 On my servers, `container start` uses around 44 KiB RSS.
 
 ## Internals
-minimal_containers uses cgroups to limit the resource usage, linux namespaces to isolate the containers from the system and chroot to change the root directory.
+minimal_containers uses cgroups to limit the resource usage, linux namespaces to isolate the containers from the system and pivot_root to change the root directory.
