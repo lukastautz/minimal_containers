@@ -547,22 +547,15 @@ void rrm(char *dir_name, uint16 dir_len) {
     closedir(dir);
 }
 
-void mount_dirs(void) {
+void prepare_dev_tmp_proc(void) {
     if (chdir(config.root) == -1)
         error("chdir failed!");
     struct stat element;
     if (!lstat("dev", &element)) {
-        umount("dev/pts");
-        if (!(config.namespaces & CLONE_NEWUSER))
-            umount("dev/shm");
         rrm(SLEN("dev"));
         rmdir("dev");
     }
-    if (!lstat("tmp", &element)) {
-        if (!(config.namespaces & CLONE_NEWUSER))
-            umount("tmp");
-        rrm(SLEN("tmp"));
-    } else
+    if (lstat("tmp", &element))
         mkdir("tmp", 0777);
     if (
         mkdir("dev", 0655) == -1 ||
@@ -587,14 +580,18 @@ void mount_dirs(void) {
         symlink("/proc/self/fd/0", "dev/stdin") == -1 ||
         symlink("/proc/self/fd/1", "dev/stdout") == -1 ||
         symlink("/proc/self/fd/2", "dev/stderr") == -1 ||
-        symlink("/dev/rtc0", "dev/rtc") == -1 ||
-        mount("none", "dev/pts", "devpts", MS_NOEXEC | MS_NOSUID, NULL) == -1
+        symlink("/dev/rtc0", "dev/rtc") == -1
     )
         error("Failed to prepare /dev!");
-    if (!(config.namespaces & CLONE_NEWUSER))
+    if (!(config.namespaces & CLONE_NEWPID)) {
         umount("proc");
-    if (!(config.namespaces & CLONE_NEWPID) && mount("proc", "proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1)
-        error("mount(/proc) failed!");
+        if (mount("proc", "proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1)
+            error("mount(/proc) failed!");
+    }
+}
+
+void do_mounts(void) {
+    struct stat element;
     bind_mount *mnt = config.mounts;
     while (mnt) {
         if (lstat(mnt->target, &element)) {
@@ -605,7 +602,8 @@ void mount_dirs(void) {
             else
                 close(open(mnt->target, O_CREAT | O_WRONLY, 0777));
         }
-        umount(mnt->target);
+        if (!(config.namespaces & CLONE_NEWUSER))
+            umount(mnt->target);
         if (mount(mnt->source, mnt->target, "", MS_BIND, NULL) == -1)
             log("mount error occurred..."); // nonfatal?
         if (mnt->read_only && mount(mnt->source, mnt->target, "", MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) == -1)
@@ -700,10 +698,9 @@ void command_start(int argc, char **argv) {
     memcpy(buf + strlen(PATH "/logs/"), argv[1], len + 1);
     log_fd = _open(buf, O_CREAT | O_WRONLY | O_TRUNC);
     parse_config(fd);
-    mount_dirs();
+    prepare_dev_tmp_proc();
     prepare_cgroups(argv[1], len);
     start_cgroups(argv[1], len);
-    free_linked_lists();
     close(log_fd);
     log_fd = 2;
     signal(SIGUSR1, do_nothing);
@@ -712,6 +709,8 @@ void command_start(int argc, char **argv) {
         save_pid(argv[1], len);
         if (unshare(CLONE_NEWNS | config.namespaces) == -1)
             error("unshare failed!");
+        do_mounts();
+        free_linked_lists();
         kill(getppid(), SIGUSR1);
         sleep(2); // sleep until SIGUSR1
         mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);
@@ -737,6 +736,8 @@ void command_start(int argc, char **argv) {
                 error("sethostname failed!");
             if (config.namespaces & CLONE_NEWPID && mount("proc", "proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1)
                 error("mount(/proc) failed!");
+            if (mount("none", "dev/pts", "devpts", MS_NOEXEC | MS_NOSUID, NULL) == -1)
+                error("mounting devpts failed!");
             if (umount2("tmp/old_root", MNT_DETACH) == -1)
                 error("umounting old root failed");
             rmdir("tmp/old_root");
@@ -757,6 +758,7 @@ void command_start(int argc, char **argv) {
         }
     } else {
         sleep(2); // sleep until SIGUSR1
+        free_linked_lists();
         memcpy(buf, SLEN("/proc/"));
         len = itoa(pid, buf + strlen("/proc/"));
         if (config.namespaces & CLONE_NEWUSER) {
