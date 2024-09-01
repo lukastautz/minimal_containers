@@ -19,6 +19,7 @@ Possible keys:
 | `max_processes`       | No       | The maximum processes which the container is allowed to run simultaneously                                                                                                                                     |
 | `cpu_share`           | No       | The "importance" of the container, a part of 1024                                                                                                                                                              |
 | `net_classid`         | No       | The network packets of the container will be assigned the specified classid (can be used for example with iptables)                                                                                            |
+| `id_map_start`        | No       | The starting uid/gid for uid/gid mappings, e.g. uid 0 (root) inside of the container is the specified value outside of the container, uid x inside of the container is the specified value + x outside of the container, by default 10000, if you set it to 0, every uid/gid will be mapped to the same uid/gid outside of the container        |
 | `mount`               | No       | (Can be used multiple times) (In the format `SOURCE:DEST`) The directory `SOURCE` will be available as `DEST` inside of the container. `container start` warns when mounting fails, but continues nevertheless |
 | `mount_ro`            | No       | Same as `mount`, but read-only. When mounting fails, `container start` exits                                                                                                                                   |
 | `iops_limit`          | No       | (Can be used multiple times) (In the format `MAJOR:MINOR IOPS`) Limits the maximum IOPS for a device                                                                                                           |
@@ -39,6 +40,7 @@ Abstract unix sockets (often displayed starting with @, for example used by Xorg
 With Debian you should execute `rm /sbin/telinit && ln -s /bin/true /sbin/telinit` when starting a container, as there is no systemd and apt calls telinit which would try to contact systemd forever.
 When you install xfce4, you have to pay attention that xfce4-session doesn't have the same pid in different containers, see abstract unix sockets.
 The neccesary cgroup (v1) systems have to be mounted at `/sys/fs/cgroup{devices,memory,pids,cpu,blkio,net_cls}`.
+The root filesystem should be owned by the correct uid/gid (inside of the container) (see `id_map_start`).
 
 ## Memory usage
 On my servers, `container start` uses around 44 KiB RSS.

@@ -108,17 +108,19 @@ LINKED_LIST(io_limit, \
 struct {
     char max_physical_memory[16]; // not zero-terminated
     char max_memory[16];          // not zero-terminated
-    char max_processes[16];
+    char max_processes[16];       // not zero-terminated
     char cpu_share[8];            // not zero-terminated
     char net_classid[16];         // not zero-terminated
     char init[128];               // zero-terminated
     char root[128];               // zero-terminated
+    char id_map_start[16];        // zero-terminated
     uint8 max_physical_memory_len;
     uint8 max_memory_len;
     uint8 max_processes_len;
     uint8 cpu_share_len;
     uint8 net_classid_len;
     uint8 root_len;
+    uint8 id_map_start_len;
     bind_mount *mounts;
     io_limit *iops_limits;
     io_limit *io_bw_limits;
@@ -221,6 +223,7 @@ void parse_config(int fd) {
         max_processes,
         cpu_share,
         net_classid,
+        id_map_start,
         mount,
         mount_ro,
         iops_limit,
@@ -314,6 +317,16 @@ void parse_config(int fd) {
                             DOUBLE_KEY_CHECK(net_classid);
                             CONFIG_COPY_SET_LEN(net_classid);
                             break;
+                        case id_map_start:
+                            DOUBLE_KEY_CHECK(id_map_start);
+                            if (sizeof(config.id_map_start) > val_len) {
+                                memcpy(config.id_map_start, ptr_after_equals_sign, val_len);
+                                config.id_map_start_len = val_len;
+                                config.id_map_start[val_len] = '\0';
+                            } else
+                                error("Value too long!");
+                            break;
+
                         case mount:
                         case mount_ro:
                             if (val_len > 255)
@@ -352,6 +365,8 @@ void parse_config(int fd) {
                     key = cpu_share;
                 else if (EQUALS_CONST(ptr_start_of_line, "net_classid"))
                     key = net_classid;
+                else if (EQUALS_CONST(ptr_start_of_line, "id_map_start"))
+                    key = id_map_start;
                 else if (EQUALS_CONST(ptr_start_of_line, "mount"))
                     key = mount;
                 else if (EQUALS_CONST(ptr_start_of_line, "mount_ro"))
@@ -377,6 +392,10 @@ void parse_config(int fd) {
         error("Missing key(s)!");
     if (config.namespaces == 0xFFFFFFFF)
         config.namespaces = 0;
+    if (!config.id_map_start_len) {
+        memcpy(config.id_map_start, SBLEN("10000"));
+        config.id_map_start_len = strlen("10000");
+    }
 }
 
 void prepare_cgroups(char *name, uint8 len) {
@@ -567,6 +586,7 @@ void prepare_dev_tmp_proc(void) {
         mknod("dev/full", S_IFCHR | 0666, makedev(1, 7)) == -1 ||
         mknod("dev/random", S_IFCHR | 0444, makedev(1, 8)) == -1 ||
         mknod("dev/urandom", S_IFCHR | 0444, makedev(1, 9)) == -1 ||
+        mknod("dev/tty", S_IFCHR | 0666, makedev(5, 0)) == -1 ||
         mknod("dev/ptmx", S_IFCHR | 0666, makedev(5, 2)) == -1 ||
         mknod("dev/vcs", S_IFCHR | 0660, makedev(7, 0)) == -1 ||
         mknod("dev/userfaultfd", S_IFCHR | 0600, makedev(10, 126)) == -1 ||
@@ -583,6 +603,33 @@ void prepare_dev_tmp_proc(void) {
         symlink("/dev/rtc0", "dev/rtc") == -1
     )
         error("Failed to prepare /dev!");
+    if (config.namespaces & CLONE_NEWUSER) {
+        int root_uid = atoi(config.id_map_start);
+        if (
+            chown("dev", root_uid, root_uid) == -1 ||
+            chown("dev/mqueue", root_uid, root_uid) == -1 ||
+            chown("dev/null", root_uid, root_uid) == -1 ||
+            chown("dev/zero", root_uid, root_uid) == -1 ||
+            chown("dev/full", root_uid, root_uid) == -1 ||
+            chown("dev/random", root_uid, root_uid) == -1 ||
+            chown("dev/urandom", root_uid, root_uid) == -1 ||
+            chown("dev/tty", root_uid, root_uid) == -1 ||
+            chown("dev/ptmx", root_uid, root_uid) == -1 ||
+            chown("dev/vcs", root_uid, root_uid) == -1 ||
+            chown("dev/userfaultfd", root_uid, root_uid) == -1 ||
+            chown("dev/cuse", root_uid, root_uid) == -1 ||
+            chown("dev/hpet", root_uid, root_uid) == -1 ||
+            chown("dev/fuse", root_uid, root_uid) == -1 ||
+            chown("dev/ppp", root_uid, root_uid) == -1 ||
+            chown("dev/rtc0", root_uid, root_uid) == -1 ||
+            lchown("dev/fd", root_uid, root_uid) == -1 ||
+            lchown("dev/stdin", root_uid, root_uid) == -1 ||
+            lchown("dev/stdout", root_uid, root_uid) == -1 ||
+            lchown("dev/stderr", root_uid, root_uid) == -1 ||
+            lchown("dev/rtc", root_uid, root_uid) == -1 
+        )
+            error("Failed to adjust owner of /dev!");
+    }
     if (!(config.namespaces & CLONE_NEWPID)) {
         umount("proc");
         if (mount("proc", "proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) == -1)
@@ -709,10 +756,14 @@ void command_start(int argc, char **argv) {
         save_pid(argv[1], len);
         if (unshare(CLONE_NEWNS | config.namespaces) == -1)
             error("unshare failed!");
-        do_mounts();
-        free_linked_lists();
         kill(getppid(), SIGUSR1);
         sleep(2); // sleep until SIGUSR1
+        if (setuid(0) == -1)
+            error("setuid failed!");
+        if (setgid(0) == -1)
+            error("setgid failed!");
+        do_mounts();
+        free_linked_lists();
         mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);
         if (mount(config.root, config.root, "", MS_BIND | MS_REC, NULL) == -1)
             error("bind-mounting root as root failed!");
@@ -762,13 +813,17 @@ void command_start(int argc, char **argv) {
         memcpy(buf, SLEN("/proc/"));
         len = itoa(pid, buf + strlen("/proc/"));
         if (config.namespaces & CLONE_NEWUSER) {
+            char _buf[strlen("0  65536\n") + config.id_map_start_len];
+            memcpy(_buf, SLEN("0 "));
+            memcpy(_buf + strlen("0 "), config.id_map_start, config.id_map_start_len);
+            memcpy(_buf + strlen("0 ") + config.id_map_start_len, SLEN(" 65536\n"));
             memcpy(buf + strlen("/proc/") + len, SBLEN("/uid_map"));
             fd = _open(buf, O_WRONLY);
-            write(fd, SLEN("0 0 1\n1 10000 99999\n"));
+            write(fd, _buf, sizeof(_buf));
             close(fd);
             buf[strlen("/proc/") + len + strlen("/")] = 'g';
             fd = _open(buf, O_WRONLY);
-            write(fd, SLEN("0 0 1\n1 10000 99999\n"));
+            write(fd, _buf, sizeof(_buf));
             close(fd);
         }
         if (config.namespaces & CLONE_NEWTIME) {
