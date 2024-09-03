@@ -41,6 +41,7 @@ With Debian you should execute `rm /sbin/telinit && ln -s /bin/true /sbin/telini
 When you install xfce4, you have to pay attention that xfce4-session doesn't have the same pid in different containers, see abstract unix sockets.
 The neccesary cgroup (v1) systems have to be mounted at `/sys/fs/cgroup{devices,memory,pids,cpu,blkio,net_cls}`.
 The root filesystem should be owned by the correct uid/gid (inside of the container) (see `id_map_start`).
+In a shell session, `/dev/self/fd/{0,1,2}`, `/dev/std{out,err,in}` mostly won't work.
 
 ## Memory usage
 On my servers, `container start` uses around 44 KiB RSS.

@@ -796,6 +796,11 @@ void command_start(int argc, char **argv) {
                 error("prctl failed!");
             if (clearenv)
                 environ = NULL;
+            if (!shell) {
+                close(0);
+                close(1);
+                close(2);
+            }
             if (init[0] == '@') {
                 const char *_argv[] = {init + 1, NULL};
                 execveat(initfd, "", _argv, NULL, AT_EMPTY_PATH);
