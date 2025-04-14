@@ -129,7 +129,7 @@ struct {
 
 char buf[MAX_CONFIG_LENGTH];
 
-int log_fd = 2;
+int log_fd = 2, parent_to_child[2], child_to_parent[2];
 
 void quit(void) {
     close(log_fd);
@@ -750,14 +750,22 @@ void command_start(int argc, char **argv) {
     start_cgroups(argv[1], len);
     close(log_fd);
     log_fd = 2;
-    signal(SIGUSR1, do_nothing);
+    if (pipe(parent_to_child) == -1 || pipe(child_to_parent) == -1)
+        error("pipe creation failed!");
     pid_t pid;
+    char byte = 0;
     if (!(pid = fork())) {
+        close(parent_to_child[1]);
+        close(child_to_parent[0]);
         save_pid(argv[1], len);
         if (unshare(CLONE_NEWNS | config.namespaces) == -1)
             error("unshare failed!");
-        kill(getppid(), SIGUSR1);
-        sleep(2); // sleep until SIGUSR1
+        if (write(child_to_parent[1], &byte, 1) != 1)
+            error("write to pipe failed!");
+        close(child_to_parent[1]);
+        if (read(parent_to_child[0], &byte, 1) != 1)
+            error("read from pipe failed!");
+        close(parent_to_child[0]);
         if (setuid(0) == -1)
             error("setuid failed!");
         if (setgid(0) == -1)
@@ -813,7 +821,11 @@ void command_start(int argc, char **argv) {
             waitpid(pid, &s, 0);
         }
     } else {
-        sleep(2); // sleep until SIGUSR1
+        close(parent_to_child[0]);
+        close(child_to_parent[1]);
+        if (read(child_to_parent[0], &byte, 1) != 1)
+            error("read from pipe failed!");
+        close(child_to_parent[0]);
         free_linked_lists();
         memcpy(buf, SLEN("/proc/"));
         len = itoa(pid, buf + strlen("/proc/"));
@@ -849,7 +861,9 @@ void command_start(int argc, char **argv) {
             write(fd, p, strlen("boottime  -") + (t - buf) + 3 + strlen("0000000\n"));
             close(fd);
         }
-        kill(pid, SIGUSR1);
+        if (write(parent_to_child[1], &byte, 1) != 1)
+            error("write to pipe failed!");
+        close(parent_to_child[1]);
         if (daemon || shell)
             waitpid(pid, &s, 0);
     }
